@@ -1,0 +1,9 @@
+#Venv
+.venv
+
+# Hide data we store
+results/
+
+test.ipynb
+
+plots*.*

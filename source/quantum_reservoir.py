@@ -1,0 +1,769 @@
+"""Quantum reservoir dynamics and observable generation.
+
+This module defines the ``QuantumReservoirDynamics`` class, which simulates
+quantum reservoir computing using a disordered transverse-field Ising model.
+The class supports both classical and quantum input modes, observable
+measurement, weak measurement back-action, and output feature generation
+for ESN readout.
+"""
+
+from .hamiltonian import *
+from .tasks import Tasks
+from cycler import cycler
+import pathlib
+import os
+from .utils import load_observables_data, get_obs_idx, ax_to_str, get_M_Had_HS_operators, monitor_rho_transform, statistical_noise
+
+class QuantumReservoirDynamics(Hamiltonian, Tasks):
+
+	"""Quantum reservoir computing dynamics for spin-chain reservoirs.
+
+	This class combines a spin Hamiltonian model with task logic to generate
+	observables from a quantum reservoir. The observables are used as computational nodes for
+	lienar regression.
+	"""
+
+	def __init__(
+		self, L, J, h, W, dt=10, sx=None, sy=None, sz=None, correlations_x=None, correlations_y=None, correlations_z=None,
+		correlations_xy=None, correlations_zx=None, correlations_zy=None, back_action=False, meas_strength=0, monitor_axis='x',
+		random_rho_0=False, axis=['z','x','y'], caxis=['z','x','y'], ccaxis=['zx', 'xy', 'zy'], Vmp=1, N_rep=1,
+		M=None, Had=None, Ry=None, **kwargs):
+
+		"""Initialize the quantum reservoir dynamics object.
+
+		Parameters
+		----------
+		L : int
+			Number of qubits in the spin reservoir.
+		J : float
+			Spin-spin coupling strength.
+		h : float
+			Transverse field strength.
+		W : float
+			Local disorder amplitude.
+		dt : float, optional
+			Time interval between input injections.
+		sx, sy, sz : list or None, optional
+			Precomputed local spin operators for each axis.
+		correlations_x, correlations_y, correlations_z, correlations_xy, correlations_zx, correlations_zy : list or None, optional
+			Precomputed two-spin correlation operators.
+		back_action : bool, optional
+			If True, apply weak-measurement back-action after each evolution.
+		meas_strength : float, optional
+			Measurement strength used for back-action.
+		monitor_axis : str, optional
+			Axis used for measurement back-action ('x', 'y', or 'z').
+		random_rho_0 : bool, optional
+			If True, initialize the reservoir with a random density matrix.
+		axis : list of str, optional
+			List of single-qubit observable axes to record.
+		caxis : list of str, optional
+			List of two-spin correlation axes to record.
+		ccaxis : list of str, optional
+			List of cross-axis two-spin correlations to record.
+		Vmp : int, optional
+			Number of virtual nodes for time multiplexing.
+		N_rep : int, optional
+			Number of repeated input injections per time step.
+		M, Had, Ry : optional
+			Precomputed measurement/back-action operators.
+		**kwargs
+			Additional parameters forwarded to parent classes.
+		"""
+
+		super().__init__(L=L, J=J, h=h, W=W, **kwargs) # initialize the parent classes
+
+		self.Vmp = Vmp
+		self.dt = dt/Vmp # time step between signal injection
+
+		# Initalize the Observable operators
+		self.axis = axis
+		self.caxis = caxis
+		self.ccaxis = ccaxis
+
+		# Local spin operators for each axis in self.axis
+		self.s_ops = {}
+		for ax in self.axis:
+			self.s_ops[ax] = locals().get(f"s{ax}") if locals().get(f"s{ax}") is not None else self.local_spin_operators(axis=ax)
+
+		# Two-spin correlation operators for each axis in self.caxis
+		self.corr_ops = {}
+		for cax in self.caxis:
+			corr_var = locals().get(f"correlations_{cax}")
+			self.corr_ops[cax] = corr_var if corr_var is not None else self.two_spins_correlations(axis=cax)
+
+		# Two-spin correlation operators for each axis in self.ccaxis
+		self.ccorr_ops = {}
+		for ccax in self.ccaxis:
+			ccorr_var = locals().get(f"correlations_{ccax}")
+			self.ccorr_ops[ccax] = ccorr_var if ccorr_var is not None else self.two_spins_correlations(axis=ccax)
+
+		self.random_rho_0 = random_rho_0 # Random initial matrix
+		self.trace_indices = list(range(2,self.L)) if self.task_name == 'Qinp' and self.inp_type in ['2qubit', 'werner', 'x_state', 'rand_bell_mix', '2qubit_pure', '2qubit_rank2'] else list(range(1, self.L))
+		self.N_rep = N_rep
+
+		self.back_action = back_action
+		self.monitor_axis = monitor_axis
+		self.meas_strength = meas_strength
+		self.M = M
+		self.Had = Had
+		self.Ry = Ry
+
+	def __repr__(self):
+
+		""" Return a representation of the QuantumReservoirDynamics class. """
+
+		return f"QuantumReservoirDynamics(L={self.L}, J={self.Js}, h={self.h}, W={self.W}, n_steps={self.n_steps}, dt={self.dt}, local_observables={self.axis}, correlations={self.caxis}, axis correlations={self.ccaxis})"
+	
+	def __str__(self):
+
+		""" Return a string description of the QuantumReservoirDynamics class. """
+
+		return f"QuantumReservoirDynamics class with {self.L} qubits, coupling constant J={self.Js}, transverse field h={self.h}, disorder strength W={self.W}, number of time steps {self.n_steps}, and time step {self.dt}."
+	
+	def get_time_evol_op(self):
+
+		"""Compute the unitary time-evolution operator for one evolution step.
+
+		Returns
+		-------
+		Qobj
+			Unitary time evolution operator U.
+		Qobj
+			Hermitian conjugate Udag of the time evolution operator.
+		"""
+
+		E, V = self.get_E_V()
+		U = V @ np.diag(np.exp(-1j*E*self.dt)) @ V.conj().T
+		self.U = Qobj(U, dims=[[2]*self.L]*2)
+		self.Udag = self.U.dag()
+		return self.U, self.Udag
+
+	def get_initial_density_matrix(self):
+
+		"""Prepare the initial state of the reservoir.
+
+		Returns
+		-------
+		Qobj
+			Initial density matrix of the full spin reservoir.
+		"""
+		if self.random_rho_0:
+			self.rho_0 = rand_dm([2]*self.L, seed=self.seed)
+
+		else: 
+			state = (basis(2,0) + basis(2,1)).unit()
+			psi_coh = tensor([state] * self.L)
+			self.rho_0 = ket2dm(psi_coh)
+
+		return self.rho_0
+	
+	def get_initial_obs_storage(self):
+
+		"""Allocate arrays for storing quantum reservoir observables.
+
+		Returns
+		-------
+		tuple
+			(local_obs, corr_obs, ccorr_obs) storage arrays.
+		"""
+
+		self.L_corr = np.sum(range(self.L))
+		self.L_ccorr = 2 * self.L_corr
+		self.store_local_obs = np.full((len(self.s_ops), self.n_steps, self.L*self.Vmp), np.nan)
+		self.store_corr_obs = np.full((len(self.corr_ops), self.n_steps, self.L_corr*self.Vmp), np.nan)
+		self.store_ccorr_obs = np.full((len(self.ccorr_ops), self.n_steps, self.L_ccorr*self.Vmp), np.nan)
+
+		return self.store_local_obs, self.store_corr_obs, self.store_ccorr_obs
+	
+	def get_initialization(self):
+
+		"""Initialize reservoir state, evolution operators, and observable storage.
+
+		Returns
+		-------
+		(Qobj, Qobj, Qobj, ndarray, ndarray, ndarray)
+			Initial density matrix, unitary operator, conjugate operator,
+			and storage arrays for local, correlation, and cross-correlation observables.
+		"""
+		
+		self.get_initial_density_matrix()
+		self.get_time_evol_op()
+		self.get_initial_obs_storage()
+
+		return self.rho_0, self.U, self.Udag, self.store_local_obs, self.store_corr_obs, self.store_ccorr_obs
+
+	def input_state(self):
+
+		"""Build the single-qubit input states from the classical input amplitudes.
+
+		The input is injected into the first qubit and represented as a list of	
+		density matrices. For non-quantum tasks, the scalar input signal is mapped to
+		qubit superposition amplitudes using ``self.sk_array``.
+
+		Returns
+		-------
+		list[Qobj]
+			Density matrices corresponding to each injected input state.
+		"""
+
+		# Qubits states
+		ket0 = basis(2,0)
+		ket1 = basis(2,1)
+		self.state_sk = [np.sqrt(1-self.sk_array[i])*ket0 + np.sqrt(self.sk_array[i])*ket1 for i in range(len(self.sk_array))] # input signal injected in the first qubit
+		# 1st qubit density matrix
+		self.rho_1 = [self.state_sk[i]*self.state_sk[i].dag() for i in range(len(self.state_sk))] # input signal injected in the first qubit
+
+		return self.rho_1
+	
+	def get_unitary_evolve_density(self, rho):
+
+		"""Apply unitary evolution to a density matrix, including optional back-action.
+
+		Parameters
+		----------
+		rho : Qobj
+			Density matrix before evolution.
+
+		Returns
+		-------
+		Qobj
+			Density matrix after evolution and optional monitoring back-action.
+		"""
+
+		rhot = self.U @ rho @ self.Udag
+
+		if self.back_action:
+			rhot = monitor_rho_transform(rhot, self.monitor_axis, self.M, self.Had, self.Ry)
+
+		return rhot
+	
+	@staticmethod
+	def input_update_qubit_RC(U, Udag, rho_0, rho_1, trace_indices, M=None, back_action=False, 
+							monitor_axis='z', Had=None, Ry=None):
+		"""Inject a quantum input into the reservoir and evolve a single step.
+
+		Parameters
+		----------
+		U : Qobj
+			Unitary evolution operator.
+		Udag : Qobj
+			Hermitian conjugate of ``U``.
+		rho_0 : Qobj
+			Current reservoir density matrix.
+		rho_1 : Qobj
+			Input state density matrix to inject into the first qubit.
+		trace_indices : list[int]
+			Indices of the reservoir qubits to keep after tracing out the first qubit.
+		M, Had, Ry : optional
+			Back-action operators used when ``back_action`` is True.
+		back_action : bool, optional
+			Whether to apply measurement back-action after evolution.
+		monitor_axis : str, optional
+			Axis used for back-action transform.
+
+		Returns
+		-------
+		Qobj
+			Density matrix after input injection and unitary evolution.
+		"""
+		# Partial trace over the first qubit (remove the first qubit from the system)
+		Tr1 = rho_0.ptrace(trace_indices) # Keep the reservoir spins except the first qubit
+		# Inject the input state to the full system
+		rho_up = tensor(rho_1, Tr1)
+
+		rho_t = U @ rho_up @ Udag # time evolution of the density matrix
+		if back_action:
+			rho_t = monitor_rho_transform(rho_t, monitor_axis, M, Had, Ry)
+		return rho_t
+		
+	def quantum_outputs_time_evolution(self):
+
+		"""
+		Returns the expectation value of the observables at each time step.
+		"""
+
+		# Get the initial density matrix, time evolution operator, and observable storage
+		self.get_initialization()
+
+		if not hasattr(self, 'input_signals') or self.input_signals is None:
+			print('generating input signal')
+			input_signal = self.get_input_signal() # generate the input signal
+		else:
+			input_signal = self.input_signals
+
+		if self.task_name == "Qinp":
+			self.rho_1 = input_signal # If the input is quantum, we replace a random qubit as input signal.
+		else:
+			reescale = 1 / self.max_bound_input
+			self.sk_array =  reescale * input_signal
+			self.input_state() # generate the input states
+
+		# print(self.axis, self.s_ops)
+
+		for k in range(self.n_steps):
+
+			for _ in range(self.N_rep):
+				self.rho_0 = self.input_update_qubit_RC(self.U, self.Udag, self.rho_0, self.rho_1[k],
+														self.trace_indices, self.M, self.back_action,
+														self.monitor_axis, self.Had, self.Ry)
+
+			for i, ax in enumerate(self.axis):
+				self.store_local_obs[i, k, :self.L] = self.average_values(self.rho_0, self.s_ops[ax])
+			for j, ax in enumerate(self.caxis):
+				self.store_corr_obs[j, k, :self.L_corr] = self.average_values(self.rho_0, self.corr_ops[ax])
+			for p, ax in enumerate(self.ccaxis):
+				self.store_ccorr_obs[p, k, :self.L_ccorr] = self.average_values(self.rho_0, self.ccorr_ops[ax])
+
+			for d in range(1,self.Vmp):
+				self.rho_0 = self.get_unitary_evolve_density(self.rho_0)
+
+				for i, ax in enumerate(self.axis):
+					self.store_local_obs[i, k, d*self.L:(d+1)*self.L] = self.average_values(self.rho_0, self.s_ops[ax])
+				for j, ax in enumerate(self.caxis):
+					self.store_corr_obs[j, k, d*self.L_corr:(d+1)*self.L_corr] = self.average_values(self.rho_0, self.corr_ops[ax])
+				for j, ax in enumerate(self.ccaxis):
+					self.store_ccorr_obs[j, k, d*self.L_ccorr:(d+1)*self.L_ccorr] = self.average_values(self.rho_0, self.ccorr_ops[ax])
+				
+
+		local_obs_list = [self.store_local_obs[i] for i in range(len(self.axis))]
+		corr_obs_list = [self.store_corr_obs[j] for j in range(len(self.caxis))]
+		ccorr_obs_list = [self.store_ccorr_obs[j] for j in range(len(self.ccaxis))]
+		self.x_out = np.concatenate(local_obs_list + corr_obs_list + ccorr_obs_list, axis=1)
+
+		return self.x_out
+	
+	@staticmethod
+	def qrc_worker(
+		L, Js, h, W, task_name="NARMA", dt=10, idx_iter=0, 
+		seed=None, sx=None, sy=None, sz=None, correlations_x=None, correlations_y=None, correlations_z=None,
+		correlations_xy=None, correlations_zx=None, correlations_zy=None,
+		max_bound_input=None, axis=['z','x','y'], caxis=['z'], ccaxis=[], Vmp=1, store=True, Dmp=1, N_rep=1, qtasks=[], inp_type='qubit',
+		back_action=False, meas_strength=0, monitor_axis='x', M=None, Had=None, Ry=None, **kwargs):
+
+		"""Compute one QRC realization and save observables to disk.
+
+		This worker is intended for parallel execution over parameter sweeps or
+		multiple disorder realizations. It builds a ``QuantumReservoirDynamics``
+		instance, runs the reservoir evolution, and optionally stores the output
+		in the results directory.
+
+		Returns
+		-------
+		tuple
+			(total_obs, input_signals) where ``total_obs`` is the observable matrix
+			and ``input_signals`` is the array of reservoir inputs.
+		"""
+
+		obs = []
+		task = Tasks(0, task_name=task_name, qtasks=qtasks, seed=seed, inp_type=inp_type)
+		task.get_input_signal()
+
+		rng = np.random.default_rng(seed)
+		seeds = rng.integers(0, 1e9, size=(Dmp))
+
+		for i in range(Dmp):
+
+			# Create an instance of the TimeEvolution class
+			res = QuantumReservoirDynamics(
+				L, Js, h, W, task_name=task_name, dt=dt, seed=seeds[i], sx=sx, sy=sy, sz=sz, 
+				correlations_x=correlations_x, correlations_y=correlations_y, correlations_z=correlations_z,
+				correlations_xy=correlations_xy, correlations_zx=correlations_zx, correlations_zy=correlations_zy,
+				max_bound_input=max_bound_input, axis=axis, caxis=caxis, ccaxis=ccaxis, Vmp=Vmp, n_max_delay=0,
+				inp_type=inp_type, N_rep=N_rep, qtasks=qtasks, back_action=back_action, meas_strength=meas_strength,
+				monitor_axis=monitor_axis, M=M, Had=Had, Ry=Ry, **kwargs)
+			
+			res.input_signals = task.input_signals
+			res.max_bound_input = task.max_bound_input
+			res.quantum_outputs_time_evolution() # computes the observables time evolution
+			obs.append(res.x_out)
+
+		total_obs = np.concatenate(obs, axis=1)    
+
+		if store:
+			path = 'results/data/'
+			if back_action:
+				path += f'back_action/{monitor_axis}/'
+				path1 = f'_MeasStr_{meas_strength}'
+			
+			path += f'{task_name}/QRC/'
+
+			if task_name == 'Qinp':
+				path += f'{inp_type}/'
+			
+			path += f'L{L}_Js{Js}_h{h}_W{W}_dt{dt}_V{Vmp}_D{Dmp}_Nrep{N_rep}'
+			path += path1 if back_action else ''
+			print(path)
+
+			pathlib.Path(path).mkdir(parents=True, exist_ok=True)
+			np.savez_compressed(f'{path}/Iter_{idx_iter}', obs=total_obs, inp=task.input_signals)
+
+		return total_obs, task.input_signals
+	
+	@staticmethod
+	def qrc_obs(
+		L, Js, N_iter, task_name="NARMA",
+		dt=10, axis=['z', 'x', 'y'], caxis=['z', 'x', 'y'], ccaxis=[], Vmp=1,
+		max_bound_input=None, seed=None, store=True,
+		sweep_param="W", sweep_values=None, fixed_h=None, fixed_W=None, rewrite=False, qtasks=[],
+		Dmp=1, N_rep=1, back_action=False, meas_strength=0, monitor_axis='x', inp_type='qubit', **kwargs):
+		"""Compute and store quantum reservoir observables for many configurations.
+
+		Parameters
+		----------
+		L, Js, task_name, dt : scalar
+			Problem setup for the reservoir model.
+		n_max_iter : int
+			Number of disorder realizations or stored iterations.
+		sweep_param : {'W', 'h', None}, optional
+			Whether to sweep over disorder strength, field strength, or keep both fixed.
+		sweep_values : sequence or None, optional
+			Values to sweep for the selected parameter.
+		fixed_h, fixed_W : float or None, optional
+			Fixed parameter values if no sweep or the complementary variable.
+		qtasks : list, optional
+			Quantum output tasks to evaluate in ``Qinp`` mode.
+		back_action : bool, optional
+			Whether to apply weak measurement back-action during evolution.
+		store : bool, optional
+			If True, save computed observables to files.
+
+		Returns
+		-------
+		list
+			List of results tuples produced by each computed iteration.
+		"""
+		if sweep_param not in ["W", "h", None]:
+			raise ValueError("sweep_param must be 'W', 'h', or None.")
+
+		# Get observables
+		sx, sy, sz, correlations_x, correlations_y, correlations_z, correlations_xy, correlations_zx, correlations_zy = Hamiltonian.get_all_observables(L=L)
+		rng = np.random.default_rng(seed)
+		seeds = rng.integers(0, 1e9, size=(N_iter if sweep_param is None else len(sweep_values) * N_iter))
+
+		if back_action:
+			M, Had, Ry = get_M_Had_HS_operators(monitor_axis, meas_strength, L)
+			axis = [monitor_axis]; caxis = [monitor_axis]; ccaxis = [] # Only get observables of the direction in which the system is monitored.
+		else: 
+			M = Had = Ry = None
+
+		# Helper to compute one config
+		def run_for_config(h, W, i_offset=0):
+
+			dir_path = 'results/data/'
+			if back_action:
+				dir_path += f'back_action/{monitor_axis}/'
+				end_dir_path = f'_MeasStr_{meas_strength}/'
+
+			if qtasks:
+				dir_path += f'{task_name}/QRC/{inp_type}/L{L}_Js{Js}_h{h}_W{W}_dt{dt}_V{Vmp}_D{Dmp}_Nrep{N_rep}'
+			else:
+				dir_path += f'{task_name}/QRC/L{L}_Js{Js}_h{h}_W{W}_dt{dt}_V{Vmp}_D{Dmp}_Nrep{N_rep}'
+
+			dir_path += end_dir_path if back_action else '/'
+
+			missing_k = []
+
+			if rewrite:
+
+				missing_k = range(N_iter)
+
+			else:
+
+				for k in range(N_iter):
+					file_path = dir_path + f'Iter_{k}.npz'
+					if not os.path.exists(file_path):
+						missing_k.append(k)
+
+				if not missing_k:
+					print(f"All iterations already computed for h = {h}, W = {W}. Skipping.")
+					return
+
+			args = [
+				(L, Js, h, W, task_name, dt, idx_iter, seeds[i_offset + k], sx, sy, sz,
+				correlations_x, correlations_y, correlations_z,
+				correlations_xy, correlations_zx, correlations_zy,
+				max_bound_input, axis, caxis, ccaxis, Vmp, store, Dmp, N_rep, qtasks,
+				inp_type, back_action, meas_strength, monitor_axis, M, Had, Ry)
+				for k, idx_iter in enumerate(missing_k)
+			]
+
+			results = Parallel(n_jobs=-1)(
+				delayed(QuantumReservoirDynamics.qrc_worker)(*arg, **kwargs)
+				for arg in args
+			)
+
+			return results
+
+		# Mode 1: sweep W
+		if sweep_param == "W":
+			if fixed_h is None:
+				raise ValueError("Must provide fixed_h when sweeping W.")
+			if sweep_values is None:
+				raise ValueError("Must provide sweep values list for W.")
+			for i, W in enumerate(sweep_values):
+				results = run_for_config(fixed_h, W, i*N_iter)
+
+		# Mode 2: sweep h
+		elif sweep_param == "h":
+			if fixed_W is None:
+				raise ValueError("Must provide fixed_W when sweeping h.")
+			if sweep_values is None:
+				raise ValueError("Must provide sweep values list for h.")
+			for i, h in enumerate(sweep_values):
+				results = run_for_config(h, fixed_W, i*N_iter)
+
+		# Mode 3: fixed W and h
+		else:
+			if fixed_h is None or fixed_W is None:
+				raise ValueError("Must provide both fixed_h and fixed_W when no sweep.")
+			results = run_for_config(fixed_h, fixed_W)
+
+		return results
+
+
+	@staticmethod 
+	def qrc_performance(
+		L, Js, sweep_values=None, fixed_param=None, fixed_W=None, fixed_h=None,
+		N_iter=10, task_name="NARMA", n_min_delay=0, n_max_delay=10,
+		dt=10, axis=['z'], caxis=[], ccaxis=[], Vmp=1, pm='Capacity', Dmp=1, N_rep=1,
+		store=True, sweep_param="W", seed=None, load_obs=False, qtasks=[], inp_type='qubit',
+		back_action=False, meas_strength=0, monitor_axis='x', noise = True, N_meas=10000, **kwargs):
+		
+		"""Evaluate QRC performance metrics across delays or sweep parameters.
+
+		Parameters
+		----------
+		L, Js : scalar
+			Reservoir size and coupling strength.
+		sweep_values : sequence or None, optional
+			Parameter values to sweep when ``sweep_param`` is ``'W'`` or ``'h'``.
+		fixed_param : float or None, optional
+			Value of the fixed parameter when sweeping the other axis.
+		N_iter : int, optional
+			Number of independent repetitions for averaging.
+		task_name : str, optional
+			Task name, such as ``NARMA``, ``STM``, ``PC``, or ``Qinp``.
+		n_min_delay, n_max_delay : int, optional
+			Delay range used by the target task evaluation.
+		pm : str, optional
+			Performance metric, e.g. ``Capacity`` or ``NMSE``.
+		load_obs : bool, optional
+			If True, load precomputed observables instead of recomputing them.
+		back_action : bool, optional
+			If True, include measurement back-action statistics.
+		noise : bool, optional
+			If True, add statistical measurement noise to observables.
+		N_meas : int, optional
+			Number of measurement samples used for noise estimation.
+
+		Returns
+		-------
+		tuple
+			Delay or sweep values, mean performance, and standard deviation arrays.
+		"""
+
+		if task_name == 'PC' and n_min_delay < 1:
+			n_min_delay = 1
+			print('For PC task the minimum delay is 1: n_min_delay set to 1')
+
+		delays = list(range(n_min_delay, n_max_delay))
+		task = Tasks(n_max_delay=0, task_name=task_name, pm=pm, qtasks=qtasks, inp_type=inp_type)
+		strqtasks = task.strqtasks
+
+		obs_idx, _ = get_obs_idx(L, axis, caxis, ccaxis, Vmp, Dmp)
+		ax_str, cax_str = ax_to_str(axis, caxis)
+
+		rng = np.random.default_rng(seed=seed)
+		seeds = rng.integers(1, 1e9, size=(N_iter))
+
+		if sweep_param not in ['W', 'h', None]:
+			raise ValueError("sweep_param must be 'W', 'h', or None.")
+
+		if sweep_param is None:
+
+			# --- Fixed h and W: performance as a function of delay only ---
+			if fixed_W is None or fixed_h is None:
+				raise ValueError("When sweep_param is None, both fixed_W and fixed_h must be provided.")
+
+			if task_name == 'Qinp':
+				C = np.full((len(delays), N_iter, task.nqtasks), np.nan)
+			else:
+				C = np.full((len(delays), N_iter), np.nan)
+
+			if load_obs == False:
+
+				data = QuantumReservoirDynamics.qrc_obs(
+					L=L, Js=Js, N_iter=N_iter, task_name=task_name, dt=dt, Vmp=Vmp, seed=seed,
+					store=False, sweep_param=sweep_param, fixed_h=fixed_h, fixed_W=fixed_W, 
+					rewrite=False, Dmp=Dmp, N_rep=N_rep, qtasks=qtasks,
+					back_action=back_action, meas_strength=meas_strength, monitor_axis=monitor_axis,
+					**kwargs)
+
+			for it in range(N_iter):
+
+				if load_obs:
+
+					data = load_observables_data(L, Js, fixed_W, fixed_h, dt, Vmp, Dmp, N_rep,
+												task_name, it, inp_type, back_action, monitor_axis,
+												meas_strength=meas_strength)
+					inp = data['inp']
+					obs = data['obs']
+				
+				else:
+
+					sample = data[it]
+					obs = sample[0]
+					inp = sample[1]
+
+				if noise:
+					obs = statistical_noise(obs.copy(), N_meas, meas_strength, L, Vmp, back_action, seed=seeds[it])
+				
+				task.x_out = obs[:, obs_idx] if not back_action else obs
+				task.input_signals = inp
+
+				if task_name == 'Qinp':
+					task.reset_quantum_input_features()              
+
+				for j, n_delay in enumerate(delays): 
+
+					task.n_max_delay = n_delay
+					task.get_output_signal(reshapeflag=True)
+					C[j,it] = task.performance(qflag=True)
+
+			C_mean = np.mean(C, axis=1)
+			C_std = np.std(C, axis=1)
+
+			if store:
+
+				
+				path = 'results/data/'
+				if back_action:
+					path += f'back_action/{monitor_axis}/'
+					path_ms = f'_MeasStr_{meas_strength}'
+
+				path += f'{task_name}/'
+				pathend = f'{pm}_L{L}_Js{Js}_V{Vmp}_D{Dmp}_Nrep{N_rep}_h{fixed_h}_W{fixed_W}_dt{dt}_ax_{ax_str}_cax_{cax_str}_sweep_delay'
+				pathend += path_ms if back_action else ''
+				
+				if task_name == 'Qinp':
+					path += f'{strqtasks}/QRC/{inp_type}/'
+					path += f'N_meas{N_meas}/' if noise else 'N_measInf/'
+					pathlib.Path(path).mkdir(parents=True, exist_ok=True)
+					fname = path+pathend
+					q_task_dict={}
+					for i, qtask in enumerate(task.qtasks):
+						q_task_dict['C_mean '+qtask] = C_mean[:,i]
+						q_task_dict['C_std '+qtask] = C_std[:,i]                
+				
+					np.savez_compressed(fname, delays=delays, **q_task_dict)
+
+				else:
+					
+					path += 'QRC/'
+					pathlib.Path(path).mkdir(parents=True, exist_ok=True)
+					fname = path + pathend
+					np.savez_compressed(fname, delays=delays, C_mean=C_mean, C_std=C_std)
+
+			return delays, C_mean, C_std
+
+		else:
+
+			# --- Sweeping h or W ---
+			if sweep_values is None or fixed_param is None:
+				raise ValueError("Must provide sweep_values and fixed_param when sweeping.")
+			
+			if task_name == 'Qinp':
+				C_store = np.full((len(sweep_values), N_iter, task.nqtasks), np.nan)
+			else:
+				C_store = np.full((len(sweep_values), N_iter), np.nan)
+
+			for i, val in enumerate(sweep_values):
+				
+				if sweep_param == "W":
+					W = val
+					h = fixed_param
+					fixed_str = 'h'
+				else:
+					h = val
+					W = fixed_param
+					fixed_str = 'W'
+					print('h', h)
+				
+				if load_obs == False:
+
+					data = QuantumReservoirDynamics.qrc_obs(
+						L=L, Js=Js, N_iter=N_iter, task_name=task_name, dt=dt, Vmp=Vmp, seed=seed,
+						store=False, sweep_param=None, fixed_h=h, fixed_W=W, rewrite=True, Dmp=Dmp, N_rep=N_rep,
+						qtasks=qtasks, **kwargs)
+
+				for it in range(N_iter):
+
+					if load_obs:
+
+						data = load_observables_data(L, Js, W, h, dt, Vmp, Dmp, N_rep, task_name,
+													it, inp_type, back_action, monitor_axis,
+													meas_strength=meas_strength)
+						inp = data['inp']
+						obs = data['obs']
+
+					else:
+
+						sample = data[it]
+						obs = sample[0]
+						inp = sample[1]
+
+					if noise:
+						obs = statistical_noise(obs.copy(), N_meas, meas_strength, L, Vmp, back_action, seed=seeds[it])
+
+					task.x_out = obs[:,obs_idx] if not back_action else obs
+					task.input_signals = inp
+
+					if task_name == 'Qinp':
+						task.reset_quantum_input_features()
+
+					C_delay = 0
+
+					for _, n_delay in enumerate(delays): 
+						
+						task.n_max_delay = n_delay
+						task.get_output_signal(reshapeflag=True)
+						
+						C = task.performance(qflag=True)
+
+						C_delay += C
+
+					C_store[i, it] = C_delay
+
+				C_mean = np.mean(C_store, axis=1)
+				C_std = np.std(C_store, axis=1)
+
+			if store:
+
+				path = 'results/data/'
+				if back_action:
+					path += f'back_action/{monitor_axis}/'
+					path_ms = f'_MeasStr_{meas_strength}'
+
+				path += f'{task_name}/'
+				pathend = f'{pm}_L{L}_Js{Js}_V{Vmp}_D{Dmp}_Nrep{N_rep}_{fixed_str}{fixed_param}_dt{dt}_ax_{ax_str}_cax_{cax_str}_sweep{sweep_param}'
+				pathend += path_ms if back_action else ''
+
+				if task_name == 'Qinp':
+					path += f'{strqtasks}/QRC/{inp_type}/'
+					path += f'N_meas{N_meas}/' if noise else 'N_measInf/'
+					pathlib.Path(path).mkdir(parents=True, exist_ok=True)
+					fname = path + pathend
+					q_task_dict = {}
+					for i, qtask in enumerate(task.qtasks):
+						q_task_dict['C_mean '+qtask] = C_mean[:,i]
+						q_task_dict['C_std '+qtask] = C_std[:,i]
+					np.savez_compressed(fname, sweep_values=sweep_values, **q_task_dict)
+
+				else:
+					path += 'QRC/'
+					pathlib.Path(path).mkdir(parents=True, exist_ok=True)
+					fname = path + pathend
+					np.savez_compressed(fname, sweep_values=sweep_values, C_mean=C_mean, C_std=C_std)
+
+			return sweep_values, C_mean, C_std

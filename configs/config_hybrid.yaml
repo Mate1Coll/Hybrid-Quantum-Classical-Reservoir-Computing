@@ -1,0 +1,128 @@
+# This Yaml file contains the parameters of the different tasks
+
+qrc_params:
+  L: 9
+  Js : 1
+  fixed_h: 3
+  fixed_W: 0.01
+  dt: 5
+  N_rep: 1
+  Vmp: 10
+  Dmp: 1
+  back_action: True
+  monitor_axis: 'x'
+  meas_strength: 10
+
+flags:
+  obs: False
+  rewrite: False
+  performance: True
+  load_obs: True
+
+esn_params:
+  N_esn: 45
+  g: 0.25
+  l: 0.001
+  N_esn_solely: 45
+
+common_params:
+  task_name: "Qinp"
+  qtasks: ['Tracerho2']
+  N_iter: 50
+  seed: 48
+  store: True
+  inp_type: 'qubit'
+
+perf_params:
+  pm: "Fidelity"
+  n_min_delay: 0
+  n_max_delay: 6
+  ratio_delay_qrc: 0.0
+  axis: ['x']
+  caxis: ['x']
+  ccaxis: []
+  onlyesn: False
+  qrc_prep_perf: False
+  noise: False
+  N_meas: 10000
+  noise_ridge_corr: False
+  reg_prep_param: 0
+
+# Particular tasks
+
+sweeps:
+  sweep1:
+    ratio_delay_qrc: [0.0, 0.5, 1.0]
+  
+  sweep2:
+    axis: [['z'],['x'],['y'],['x','y'], ['z','x','y']]
+    caxis: [['z'],['x'],['y'],['x','y'], ['z','x','y']]
+    N_esn_solely: [90, 90, 90, 135, 180]
+
+  sweep3:
+    L: [5,6,7,8,9,10]
+    N_esn: [15,21,28,36,45,55]
+
+sweepslurm:
+  z:
+    axis: ['z']
+  x:
+    axis: ['x']
+  y:
+    axis: ['y']
+  xy:
+    axis: ['x','y']
+  zxy:
+    axis: ['z','x','y']
+
+# Optimized quantum task parameters
+
+all_qtasks:
+  Tracerho2:
+    qtasks: ['Tracerho2']
+    pm: "NMSE"
+    g: 0.25
+    l: 0.001
+    ratio_delay_qrc: 0.5
+
+  Entropy:
+    qtasks: ['Entropy']
+    pm: "NMSE"
+    g: 0.25
+    l: 0.001
+    ratio_delay_qrc: 1.0
+
+  Sigman:
+    qtasks: ['Sigman']
+    pm: "NMSE"
+    g: 4
+    l: 0.00001
+    ratio_delay_qrc: 0.0
+
+  Entanglement:
+    qtasks: ['Entanglement']
+    pm: "NMSE"
+    g: 0.25
+    l: 0.001
+    ratio_delay_qrc: 1.0
+
+  Fidelity:
+    qtasks: ['Fidelity']
+    pm: "Fidelity"
+    g: 4
+    l: 0.00001
+    ratio_delay_qrc: 1.0
+  
+  FidelityPurity:
+    qtasks: ['Fidelity']
+    pm: "FidelityPurity"
+    g: 4
+    l: 0.00001
+    ratio_delay_qrc: 0.0
+
+  FidelityEntanglement:
+    qtasks: ['Fidelity']
+    pm: "FidelityEntanglement"
+    g: 4
+    l: 0.00001
+    ratio_delay_qrc: 0.0
