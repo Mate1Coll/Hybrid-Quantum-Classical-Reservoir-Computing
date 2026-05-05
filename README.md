@@ -82,7 +82,7 @@ Recommended: create a Python virtual environment before installing.
 ```bash
 # Clone the repository (if not already done)
 git clone <repo-url>
-cd Quantum-Reservoir-Computing
+cd Hybrid-Quantum-Classical-Reservoir-Computing
 
 # Create and activate virtual environment
 python3 -m venv .venv
