@@ -5,7 +5,7 @@
 This repository implements a hybrid quantum-classical reservoir computing (HRC) architecture for memory and nonlinear regression tasks. The architecture combines:
 
 - a quantum reservoir computing module based on a disordered spin network with transverse field dynamics,
-- a classical Echo State Network (ESN) readout layer,
+- a classical reservoir computing Echo State Network (ESN).
 
 This setup enables us to reproduce memory tasks that are nonlinear in the quantum input (density matrices composed of qubit states).
 
