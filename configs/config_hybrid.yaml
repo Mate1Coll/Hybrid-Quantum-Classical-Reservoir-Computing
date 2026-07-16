@@ -7,14 +7,15 @@ qrc_params:
   fixed_W: 0.01
   dt: 5
   N_rep: 1
-  Vmp: 10
+  Vmp: 10 # 10
   Dmp: 1
-  back_action: True
+  back_action: False
   monitor_axis: 'x'
   meas_strength: 10
+  random_unitary: True
 
 flags:
-  obs: False
+  obs: True
   rewrite: False
   performance: True
   load_obs: True
@@ -28,7 +29,7 @@ esn_params:
 common_params:
   task_name: "Qinp"
   qtasks: ['Tracerho2']
-  N_iter: 50
+  N_iter: 100
   seed: 48
   store: True
   inp_type: 'qubit'
@@ -38,10 +39,10 @@ perf_params:
   n_min_delay: 0
   n_max_delay: 6
   ratio_delay_qrc: 0.0
-  axis: ['x']
-  caxis: ['x']
+  axis: ['z']
+  caxis: ['z']
   ccaxis: []
-  onlyesn: False
+  onlyesn: True
   qrc_prep_perf: False
   noise: False
   N_meas: 10000
@@ -111,7 +112,7 @@ all_qtasks:
     pm: "Fidelity"
     g: 4
     l: 0.00001
-    ratio_delay_qrc: 1.0
+    ratio_delay_qrc: 0.5
   
   FidelityPurity:
     qtasks: ['Fidelity']

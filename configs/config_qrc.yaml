@@ -1,13 +1,13 @@
 # This Yaml file contains the parameters for the qrc_observables.py script
 
 qrc_params:
-  L: 9
+  L: 5 # 9
   Js: 1
   dt: 5
   fixed_h: 3
   fixed_W: 0.01
   sweep_param: null # None
-  Vmp: 10
+  Vmp: 10 # 10
   Dmp: 1
   N_rep: 1
   N_iter: 100
@@ -19,6 +19,7 @@ qrc_params:
   back_action: False
   meas_strength: 0.1
   monitor_axis: 'x'
+  random_unitary: True
 
 perf_params:
   pm: 'Capacity'

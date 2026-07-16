@@ -17,7 +17,7 @@ def int_or_float(value):
 
 def load_observables_data(L, Js, W, h, dt, Vmp, Dmp, N_rep, task_name, it, 
 						  inp_type='qubit', back_action=False, monitor_axis='x',
-						  meas_strength=None):
+						  meas_strength=None, random_unitary=False):
 	"""Load precomputed quantum observable dynamics data.
 
 	Parameters
@@ -58,6 +58,8 @@ def load_observables_data(L, Js, W, h, dt, Vmp, Dmp, N_rep, task_name, it,
 	"""
 
 	path = f"results/data/"
+	if random_unitary:
+		path += 'random_unitary/'
 	if back_action:
 		path += f"back_action/{monitor_axis}/"
 		pathend = f"_MeasStr_{meas_strength}"

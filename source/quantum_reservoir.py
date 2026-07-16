@@ -27,7 +27,7 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 		self, L, J, h, W, dt=10, sx=None, sy=None, sz=None, correlations_x=None, correlations_y=None, correlations_z=None,
 		correlations_xy=None, correlations_zx=None, correlations_zy=None, back_action=False, meas_strength=0, monitor_axis='x',
 		random_rho_0=False, axis=['z','x','y'], caxis=['z','x','y'], ccaxis=['zx', 'xy', 'zy'], Vmp=1, N_rep=1,
-		M=None, Had=None, Ry=None, **kwargs):
+		M=None, Had=None, Ry=None, random_unitary=False, **kwargs):
 
 		"""Initialize the quantum reservoir dynamics object.
 
@@ -108,6 +108,7 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 		self.M = M
 		self.Had = Had
 		self.Ry = Ry
+		self.random_unitary = random_unitary
 
 	def __repr__(self):
 
@@ -133,10 +134,17 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 			Hermitian conjugate Udag of the time evolution operator.
 		"""
 
-		E, V = self.get_E_V()
-		U = V @ np.diag(np.exp(-1j*E*self.dt)) @ V.conj().T
-		self.U = Qobj(U, dims=[[2]*self.L]*2)
-		self.Udag = self.U.dag()
+		print(self.random_unitary)
+
+		if self.random_unitary:
+			self.U = rand_unitary([2]*self.L, seed=self.seed)
+			self.Udag = self.U.dag()
+		else:
+			E, V = self.get_E_V()
+			U = V @ np.diag(np.exp(-1j*E*self.dt)) @ V.conj().T
+			self.U = Qobj(U, dims=[[2]*self.L]*2)
+			self.Udag = self.U.dag()
+
 		return self.U, self.Udag
 
 	def get_initial_density_matrix(self):
@@ -339,7 +347,7 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 		seed=None, sx=None, sy=None, sz=None, correlations_x=None, correlations_y=None, correlations_z=None,
 		correlations_xy=None, correlations_zx=None, correlations_zy=None,
 		max_bound_input=None, axis=['z','x','y'], caxis=['z'], ccaxis=[], Vmp=1, store=True, Dmp=1, N_rep=1, qtasks=[], inp_type='qubit',
-		back_action=False, meas_strength=0, monitor_axis='x', M=None, Had=None, Ry=None, **kwargs):
+		back_action=False, meas_strength=0, monitor_axis='x', M=None, Had=None, Ry=None, random_unitary=False, **kwargs):
 
 		"""Compute one QRC realization and save observables to disk.
 
@@ -371,7 +379,7 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 				correlations_xy=correlations_xy, correlations_zx=correlations_zx, correlations_zy=correlations_zy,
 				max_bound_input=max_bound_input, axis=axis, caxis=caxis, ccaxis=ccaxis, Vmp=Vmp, n_max_delay=0,
 				inp_type=inp_type, N_rep=N_rep, qtasks=qtasks, back_action=back_action, meas_strength=meas_strength,
-				monitor_axis=monitor_axis, M=M, Had=Had, Ry=Ry, **kwargs)
+				monitor_axis=monitor_axis, M=M, Had=Had, Ry=Ry, random_unitary=random_unitary, **kwargs)
 			
 			res.input_signals = task.input_signals
 			res.max_bound_input = task.max_bound_input
@@ -382,6 +390,8 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 
 		if store:
 			path = 'results/data/'
+			if random_unitary:
+				path += 'random_unitary/'
 			if back_action:
 				path += f'back_action/{monitor_axis}/'
 				path1 = f'_MeasStr_{meas_strength}'
@@ -406,7 +416,8 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 		dt=10, axis=['z', 'x', 'y'], caxis=['z', 'x', 'y'], ccaxis=[], Vmp=1,
 		max_bound_input=None, seed=None, store=True,
 		sweep_param="W", sweep_values=None, fixed_h=None, fixed_W=None, rewrite=False, qtasks=[],
-		Dmp=1, N_rep=1, back_action=False, meas_strength=0, monitor_axis='x', inp_type='qubit', **kwargs):
+		Dmp=1, N_rep=1, back_action=False, meas_strength=0, monitor_axis='x', inp_type='qubit',
+		random_unitary=False, **kwargs):
 		"""Compute and store quantum reservoir observables for many configurations.
 
 		Parameters
@@ -436,6 +447,8 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 		if sweep_param not in ["W", "h", None]:
 			raise ValueError("sweep_param must be 'W', 'h', or None.")
 
+		print(random_unitary)
+
 		# Get observables
 		sx, sy, sz, correlations_x, correlations_y, correlations_z, correlations_xy, correlations_zx, correlations_zy = Hamiltonian.get_all_observables(L=L)
 		rng = np.random.default_rng(seed)
@@ -451,6 +464,8 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 		def run_for_config(h, W, i_offset=0):
 
 			dir_path = 'results/data/'
+			if random_unitary:
+				dir_path += 'random_unitary/'
 			if back_action:
 				dir_path += f'back_action/{monitor_axis}/'
 				end_dir_path = f'_MeasStr_{meas_strength}/'
@@ -484,7 +499,7 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 				correlations_x, correlations_y, correlations_z,
 				correlations_xy, correlations_zx, correlations_zy,
 				max_bound_input, axis, caxis, ccaxis, Vmp, store, Dmp, N_rep, qtasks,
-				inp_type, back_action, meas_strength, monitor_axis, M, Had, Ry)
+				inp_type, back_action, meas_strength, monitor_axis, M, Had, Ry, random_unitary)
 				for k, idx_iter in enumerate(missing_k)
 			]
 
@@ -528,7 +543,8 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 		N_iter=10, task_name="NARMA", n_min_delay=0, n_max_delay=10,
 		dt=10, axis=['z'], caxis=[], ccaxis=[], Vmp=1, pm='Capacity', Dmp=1, N_rep=1,
 		store=True, sweep_param="W", seed=None, load_obs=False, qtasks=[], inp_type='qubit',
-		back_action=False, meas_strength=0, monitor_axis='x', noise = True, N_meas=10000, **kwargs):
+		back_action=False, meas_strength=0, monitor_axis='x', noise = True, N_meas=10000,
+		random_unitary=False, **kwargs):
 		
 		"""Evaluate QRC performance metrics across delays or sweep parameters.
 
@@ -598,7 +614,7 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 					store=False, sweep_param=sweep_param, fixed_h=fixed_h, fixed_W=fixed_W, 
 					rewrite=False, Dmp=Dmp, N_rep=N_rep, qtasks=qtasks,
 					back_action=back_action, meas_strength=meas_strength, monitor_axis=monitor_axis,
-					**kwargs)
+					random_unitary=random_unitary, **kwargs)
 
 			for it in range(N_iter):
 
@@ -606,7 +622,7 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 
 					data = load_observables_data(L, Js, fixed_W, fixed_h, dt, Vmp, Dmp, N_rep,
 												task_name, it, inp_type, back_action, monitor_axis,
-												meas_strength=meas_strength)
+												meas_strength=meas_strength, random_unitary=random_unitary)
 					inp = data['inp']
 					obs = data['obs']
 				
@@ -638,6 +654,8 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 
 				
 				path = 'results/data/'
+				if random_unitary:
+					path += 'random_unitary/'
 				if back_action:
 					path += f'back_action/{monitor_axis}/'
 					path_ms = f'_MeasStr_{meas_strength}'
@@ -695,7 +713,7 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 					data = QuantumReservoirDynamics.qrc_obs(
 						L=L, Js=Js, N_iter=N_iter, task_name=task_name, dt=dt, Vmp=Vmp, seed=seed,
 						store=False, sweep_param=None, fixed_h=h, fixed_W=W, rewrite=True, Dmp=Dmp, N_rep=N_rep,
-						qtasks=qtasks, **kwargs)
+						qtasks=qtasks, random_unitary=random_unitary, **kwargs)
 
 				for it in range(N_iter):
 
@@ -741,6 +759,8 @@ class QuantumReservoirDynamics(Hamiltonian, Tasks):
 			if store:
 
 				path = 'results/data/'
+				if random_unitary:
+					path += 'random_unitary/'
 				if back_action:
 					path += f'back_action/{monitor_axis}/'
 					path_ms = f'_MeasStr_{meas_strength}'

@@ -89,7 +89,8 @@ class HybridDynamics(QuantumReservoirDynamics, EsnDynamics):
 		pm = 'NMSE', store=True, N_rep=1, qtasks=[], onlyesn=False, N_esn_solely=25,
 		all_info=False, qrc_prep_perf=False, inp_type='qubit',
 		back_action=False, monitor_axis='x', meas_strength=0.2,
-		noise=False, N_meas=1e5, reg_prep_param=0, noise_ridge_corr=False, **kwargs):
+		noise=False, N_meas=1e5, reg_prep_param=0, noise_ridge_corr=False,
+		random_unitary=False, **kwargs):
 
 		"""Evaluate performance of the series hybrid architecture across delay values.
 
@@ -217,7 +218,7 @@ class HybridDynamics(QuantumReservoirDynamics, EsnDynamics):
 					store=False, sweep_param=None, fixed_h=h, fixed_W=W, 
 					rewrite=False, Dmp=Dmp, N_rep=N_rep, qtasks=qtasks,
 					back_action=back_action, monitor_axis=monitor_axis,
-					meas_strength=meas_strength, inp_type=inp_type)
+					meas_strength=meas_strength, inp_type=inp_type, random_unitary=random_unitary)
 			
 		rng = np.random.default_rng(seed=seed)
 		seeds = rng.integers(1, 1e9, size=(N_iter))
@@ -233,7 +234,7 @@ class HybridDynamics(QuantumReservoirDynamics, EsnDynamics):
 			else:
 
 				data = load_observables_data(L, Js, W, h, dt, Vmp, Dmp, N_rep, task_name, it, inp_type=inp_type,
-								 back_action=back_action, monitor_axis=monitor_axis, meas_strength=meas_strength)
+								 back_action=back_action, monitor_axis=monitor_axis, meas_strength=meas_strength, random_unitary=random_unitary)
 				inp = data['inp']
 				obs = data['obs']
 			
@@ -310,6 +311,7 @@ class HybridDynamics(QuantumReservoirDynamics, EsnDynamics):
 					if onlyesn:
 						solely_esn.get_output_signal(qtasks=[task_hyb.qtasks[i]])
 						C_esn[i,j,it] = solely_esn.performance()
+						
 						# if task_hyb.n_max_delay == 15 and solely_esn.n_max_delay == 15:
 						# 	plt.rcParams.update({'font.size': 20, 'font.family': 'serif'})
 						# 	plt.rcParams['axes.titlesize'] = 20
@@ -337,6 +339,8 @@ class HybridDynamics(QuantumReservoirDynamics, EsnDynamics):
 
 		if store:
 			fname = 'results/data/'
+			if random_unitary:
+				fname += 'random_unitary/'
 			if back_action:
 				fname += f'back_action/{monitor_axis}/'
 				fend = f'_MeasStr{meas_strength}'
@@ -363,6 +367,8 @@ class HybridDynamics(QuantumReservoirDynamics, EsnDynamics):
 
 			if store:
 				fprepname = 'results/data/'
+				if random_unitary:
+					fname += 'random_unitary/'
 				if back_action:
 					fprepname += f'back_action/{monitor_axis}/'
 					fprepend = f'_MeasStr{meas_strength}'
@@ -388,8 +394,12 @@ class HybridDynamics(QuantumReservoirDynamics, EsnDynamics):
 				q_task_dict['C_std '+q_task] = C_std_esn[i]
 
 			if store:
-				fname = f'results/data/{task_name}/{strqtasks}/ESN/{inp_type}/{pm}_L{L}_Js{Js}_V{Vmp}_D{Dmp}_Nrep{N_rep}_h{h}_W{W}_dt{dt}_ax_{ax_str}_cax_{cax_str}_Nesn{N_esn_solely}_g{g}_l{l}_sweep_delay'
-				pathlib.Path(f'results/data/{task_name}/{strqtasks}/ESN/{inp_type}/').mkdir(parents=True, exist_ok=True)
+				if random_unitary:
+					fname = f'results/data/random_unitary/{task_name}/{strqtasks}/ESN/{inp_type}/{pm}_L{L}_Js{Js}_V{Vmp}_D{Dmp}_Nrep{N_rep}_h{h}_W{W}_dt{dt}_ax_{ax_str}_cax_{cax_str}_Nesn{N_esn_solely}_g{g}_l{l}_sweep_delay'
+					pathlib.Path(f'results/data/random_unitary/{task_name}/{strqtasks}/ESN/{inp_type}/').mkdir(parents=True, exist_ok=True)				
+				else:
+					fname = f'results/data/{task_name}/{strqtasks}/ESN/{inp_type}/{pm}_L{L}_Js{Js}_V{Vmp}_D{Dmp}_Nrep{N_rep}_h{h}_W{W}_dt{dt}_ax_{ax_str}_cax_{cax_str}_Nesn{N_esn_solely}_g{g}_l{l}_sweep_delay'
+					pathlib.Path(f'results/data/{task_name}/{strqtasks}/ESN/{inp_type}/').mkdir(parents=True, exist_ok=True)
 				np.savez_compressed(fname, delays=delays, **q_task_dict)
 
 		return delays, C_mean, C_std
