@@ -175,6 +175,6 @@ Common parameters across scripts:
 
 If you use this code in your research, please cite:
 
-Coll-Comas, Mateu; Giorgi, Gian Luca; and Zambrini, Roberta, “Temporal processing of quantum states with hybrid quantum-classical reservoirs,” in submission (2026).
+[label](https://arxiv.org/abs/2606.21327)
 
 A full reference will be provided once the paper is published.
