@@ -175,6 +175,6 @@ Common parameters across scripts:
 
 If you use this code in your research, please cite:
 
-[label](https://arxiv.org/abs/2606.21327)
+<https://arxiv.org/abs/2606.21327>
 
 A full reference will be provided once the paper is published.
